@@ -464,7 +464,7 @@ int cgmanager_move_pid (void *data, NihDBusMessage *message,
  * @name is taken to be relative to the caller's cgroup and may not
  * start with / or .. .
  */
-int create_main (const char *controller, char *cgroup, struct ucred ucred, bool exclusive)
+int create_main (const char *controller, char *cgroup, struct ucred ucred, bool exclusive, int *existed)
 {
 	int ret;
 	char rcgpath[MAXPATHLEN], path[MAXPATHLEN], dirpath[MAXPATHLEN];
@@ -513,6 +513,7 @@ int create_main (const char *controller, char *cgroup, struct ucred ucred, bool 
 		strncat(path, "/", MAXPATHLEN-1);
 		strncat(path, p, MAXPATHLEN-1);
 		if (dir_exists(path)) {
+			*existed = true;
 			if (exclusive) {
 				nih_error("%s exists", path);
 				return -1;
@@ -532,8 +533,9 @@ int create_main (const char *controller, char *cgroup, struct ucred ucred, bool 
 			return -1;
 		}
 		ret = mkdir(path, 0755);
-		if (ret < 0) {  // Should we ignore EEXIST?  Ok, but don't chown.
+		if (ret < 0) {
 			if (errno == EEXIST) {
+				*existed = true;
 				if (exclusive) {
 					nih_error("%s exists", path);
 					return -1;
@@ -543,7 +545,7 @@ int create_main (const char *controller, char *cgroup, struct ucred ucred, bool 
 			nih_error("failed to create %s", path);
 			return -1;
 		}
-		if (!chown_cgroup_path(path, ucred.uid, ucred.gid, true)) {
+		if (! *existed && !chown_cgroup_path(path, ucred.uid, ucred.gid, true)) {
 			nih_error("Failed to change ownership on %s to %d:%d",
 				path, (int)ucred.uid, (int)ucred.gid);
 			rmdir(path);
@@ -569,6 +571,7 @@ void create_scm_reader (struct scm_sock_data *data,
 	struct ucred ucred;
 	char b[1];
 	int ret;
+	int existed;
 
 	if (!get_nih_io_creds(io, &ucred)) {
 		nih_error("failed to read ucred");
@@ -577,8 +580,8 @@ void create_scm_reader (struct scm_sock_data *data,
 	nih_info (_("CreateScm: Client fd is: %d (pid=%d, uid=%d, gid=%d)"),
 		  data->fd, ucred.pid, ucred.uid, ucred.gid);
 
-	ret = create_main(data->controller, data->cgroup, ucred, data->flag);
-	*b = ret == 0 ? '1' : '0';
+	ret = create_main(data->controller, data->cgroup, ucred, data->flag, &existed);
+	*b = ret == 0 ? existed ? '2' : '1' : '0';
 	if (write(data->fd, b, 1) < 0)
 		nih_error("createScm: Error writing final result to client");
 out:
@@ -635,10 +638,10 @@ int cgmanager_create_scm (void *data, NihDBusMessage *message,
 	return cgmanager_create_scm_general(data, message, controller, cgroup, sockfd, false);
 }
 /*
- * non-scm create function for both exclusive and non-exclisve calls
+ * non-scm create function for both exclusive and non-exclusive calls
  */
 int cgmanager_create_general (void *data, NihDBusMessage *message,
-				 const char *controller, char *cgroup, bool exclusive)
+				 const char *controller, char *cgroup, bool exclusive, int *existed)
 {
 	int fd = 0, ret;
 	struct ucred ucred;
@@ -662,7 +665,7 @@ int cgmanager_create_general (void *data, NihDBusMessage *message,
 	nih_info (_("Create: Client fd is: %d (pid=%d, uid=%d, gid=%d)"),
 		  fd, ucred.pid, ucred.uid, ucred.gid);
 
-	ret = create_main(controller, cgroup, ucred, exclusive);
+	ret = create_main(controller, cgroup, ucred, exclusive, existed);
 	if (ret)
 		nih_dbus_error_raise_printf (DBUS_ERROR_INVALID_ARGS,
 		                             "invalid request");
@@ -671,12 +674,13 @@ int cgmanager_create_general (void *data, NihDBusMessage *message,
 int cgmanager_create_exclusive (void *data, NihDBusMessage *message,
 				 const char *controller, char *cgroup)
 {
-	return cgmanager_create_general(data, message, controller, cgroup, true);
+	int unused;
+	return cgmanager_create_general(data, message, controller, cgroup, true, &unused);
 }
 int cgmanager_create (void *data, NihDBusMessage *message,
-				 const char *controller, char *cgroup)
+				 const char *controller, char *cgroup, int *existed)
 {
-	return cgmanager_create_general(data, message, controller, cgroup, false);
+	return cgmanager_create_general(data, message, controller, cgroup, false, existed);
 }
 
 /*
